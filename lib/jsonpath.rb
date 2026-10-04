@@ -7,6 +7,7 @@ require 'jsonpath/dig'
 require 'jsonpath/enumerable'
 require 'jsonpath/version'
 require 'jsonpath/parser'
+require 'jsonpath/rfc9535/query'
 
 # JsonPath: initializes the class with a given JsonPath and parses that path
 # into a token array.
@@ -19,7 +20,8 @@ class JsonPath
     :symbolize_keys => false,
     :use_symbols => false,
     :allow_send => true,
-    :max_nesting => MAX_NESTING_ALLOWED
+    :max_nesting => MAX_NESTING_ALLOWED,
+    :rfc9535 => false
   }
 
   attr_accessor :path
@@ -27,6 +29,12 @@ class JsonPath
   def initialize(path, opts = {})
     @opts = DEFAULT_OPTIONS.merge(opts)
     set_max_nesting
+    @rfc9535 = @opts[:rfc9535] || @opts[:standard]
+    if @rfc9535
+      @path = path
+      @rfc_query = RFC9535::Query.new(path.strip)
+      return
+    end
     scanner = StringScanner.new(path.strip)
     @path = []
     until scanner.eos?
@@ -73,12 +81,16 @@ class JsonPath
   end
 
   def join(join_path)
+    if @rfc9535
+      return self.class.new("#{@path}#{join_path}", rfc9535_options)
+    end
     res = deep_clone
     res.path += JsonPath.new(join_path).path
     res
   end
 
   def on(obj_or_str, opts = {})
+    return @rfc_query.result_with_options(self.class.process_object(obj_or_str, @opts), opts) if @rfc9535
     a = enum_on(obj_or_str).to_a
     if symbolize_keys?(opts)
       a.map! do |e|
@@ -86,6 +98,34 @@ class JsonPath
       end
     end
     a
+  end
+
+  # RFC 9535 mode: returns [value, Normalized Path] pairs.
+  def result(obj_or_str, opts = {})
+    raise ArgumentError, '#result is only available in RFC 9535 mode; use #on for values' unless @rfc9535
+
+    @rfc_query.result_with_options(self.class.process_object(obj_or_str, @opts), opts)
+  end
+
+  # RFC 9535 mode: returns only Normalized Paths.
+  def paths(obj_or_str, opts = {})
+    raise ArgumentError, 'paths is only available in RFC 9535 mode' unless @rfc9535
+
+    @rfc_query.paths(self.class.process_object(obj_or_str, @opts))
+  end
+
+  # RFC 9535 mode: returns only values.
+  def values(obj_or_str, opts = {})
+    return @rfc_query.values(self.class.process_object(obj_or_str, @opts)) if @rfc9535
+
+    on(obj_or_str, opts)
+  end
+
+  # RFC 9535 mode: yields [value, Normalized Path] pairs.
+  def each_pair(obj_or_str, &blk)
+    raise ArgumentError, '#each_pair is only available in RFC 9535 mode' unless @rfc9535
+
+    @rfc_query.each(self.class.process_object(obj_or_str, @opts), &blk)
   end
 
   def self.fetch_all_path(obj)
@@ -122,10 +162,12 @@ class JsonPath
   end
 
   def first(obj_or_str, *args)
+    return @rfc_query.first(self.class.process_object(obj_or_str, @opts)) if @rfc9535
     enum_on(obj_or_str).first(*args)
   end
 
   def enum_on(obj_or_str, mode = nil)
+    raise ArgumentError, 'legacy modes are not available in RFC 9535 mode' if @rfc9535 && mode
     JsonPath::Enumerable.new(self, self.class.process_object(obj_or_str, @opts), mode,
                              @opts)
   end
@@ -135,11 +177,27 @@ class JsonPath
     new(path, opts).on(process_object(obj_or_str))
   end
 
+  # Creates an independent RFC 9535 (standard JSONPath) query.
+  def self.rfc9535(path)
+    RFC9535::Query.new(path)
+  end
+  class << self
+    alias standard rfc9535
+  end
+
   def self.for(obj_or_str)
     Proxy.new(process_object(obj_or_str))
   end
 
   private
+
+  def rfc_query
+    @rfc_query
+  end
+
+  def rfc9535_options
+    @opts.merge(:rfc9535 => true)
+  end
 
   def self.process_object(obj_or_str, opts = {})
     obj_or_str.is_a?(String) ? MultiJson.decode(obj_or_str, max_nesting: opts[:max_nesting]) : obj_or_str

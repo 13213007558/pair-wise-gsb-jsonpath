@@ -224,6 +224,57 @@ example given this JSON data:
 ]
 ```
 
+### RFC 9535 (standard JSONPath) mode
+
+JsonPath ships with an independent, standards compliant implementation of
+[RFC 9535](https://www.rfc-editor.org/rfc/rfc9535). It is completely separate
+from the legacy Goessner mode above, so existing behavior is unchanged.
+
+Enable it with `rfc9535: true` (or the `standard: true` alias):
+
+```ruby
+path = JsonPath.new('$..book[?(@.price < 10)].title', rfc9535: true)
+path.on(json)
+# => [["Sayings of the Century", "$['store']['book'][0]['title']"],
+#     ["Moby Dick",             "$['store']['book'][2]['title']"]]
+```
+
+In RFC 9535 mode `#on` and `#result` return `[value, normalized_path]` pairs.
+Use `#values` for only the values and `#paths` for only the
+[Normalized Paths](https://www.rfc-editor.org/rfc/rfc9535#section-2.7):
+
+```ruby
+path.values(json) # => ["Sayings of the Century", "Moby Dick"]
+path.paths(json)  # => ["$['store']['book'][0]['title']", ...]
+path.first(json)  # => ["Sayings of the Century", "$['store']['book'][0]['title']"]
+```
+
+You can also build a standalone query:
+
+```ruby
+query = JsonPath.rfc9535('$.store.book[0,1].author')
+query.result(json) # => [["Nigel Rees", "$['store']['book'][0]['author']"], ...]
+query.on(json)     # values only
+```
+
+Supported standard features:
+
+* child segments (`$.a.b`, `$['a']['b']`) and descendant segments (`$..x`)
+* wildcard, name and index selectors, including multiple selectors
+* slices (`[start:stop:step]` with negative indexes and steps)
+* filter selectors with `&&`, `||`, `!`, comparisons and nested queries
+* the standard functions `count()`, `length()`, `value()`, `match()` and
+  `search()` with strict NodesType / ValueType / LogicalType argument checking
+
+A few deliberate standard semantics differ from the legacy mode:
+
+* a missing member is `Nothing`, which is distinct from JSON `null` and from
+  `false`; e.g. `$[?(@.missing == null)]` matches nothing
+* selecting the same node through multiple selectors keeps every duplicate
+  (only a single descendant segment de-duplicates its visited nodes)
+* malformed paths and ill-typed function arguments raise
+  `JsonPath::RFC9535::ParseError` at parse time
+
 ### Manipulation
 
 If you'd like to do substitution in a json object, you can use `#gsub`
