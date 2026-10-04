@@ -7,6 +7,7 @@ require 'jsonpath/dig'
 require 'jsonpath/enumerable'
 require 'jsonpath/version'
 require 'jsonpath/parser'
+require 'jsonpath/rfc9535'
 
 # JsonPath: initializes the class with a given JsonPath and parses that path
 # into a token array.
@@ -19,39 +20,42 @@ class JsonPath
     :symbolize_keys => false,
     :use_symbols => false,
     :allow_send => true,
-    :max_nesting => MAX_NESTING_ALLOWED
+    :max_nesting => MAX_NESTING_ALLOWED,
+    :rfc9535 => false
   }
 
   attr_accessor :path
+  attr_reader :segments
 
   def initialize(path, opts = {})
     @opts = DEFAULT_OPTIONS.merge(opts)
     set_max_nesting
-    scanner = StringScanner.new(path.strip)
-    @path = []
-    until scanner.eos?
-      if (token = scanner.scan(/\$\B|@\B|\*|\.\./))
-        @path << token
-      elsif (token = scanner.scan(/[$@\p{Alnum}:{}_ -]+/))
-        @path << "['#{token}']"
-      elsif (token = scanner.scan(/'(.*?)'/))
-        @path << "[#{token}]"
-      elsif (token = scanner.scan(/\[/))
-        @path << find_matching_brackets(token, scanner)
-      elsif (token = scanner.scan(/\]/))
-        raise ArgumentError, 'unmatched closing bracket'
-      elsif (token = scanner.scan(/\(.*\)/))
-        @path << token
-      elsif scanner.scan(/\./)
-        nil
-      elsif (token = scanner.scan(/[><=] \d+/))
-        @path.last << token
-      elsif (token = scanner.scan(/./))
-        @path.last << token
-      else
-        raise ArgumentError, "character '#{scanner.peek(1)}' not supported in query"
-      end
+    if rfc9535?
+      @segments = RFC9535::Parser.parse(path)
+      @path = path
+    else
+      @segments = nil
+      parse_legacy(path)
     end
+  end
+
+  def rfc9535?
+    !!@opts[:rfc9535]
+  end
+
+  # Apply the query and return JsonPath::RFC9535::Result objects carrying
+  # both each selected value and its Normalized Path. Only available in
+  # RFC 9535 mode.
+  def result_on(obj_or_str)
+    raise ArgumentError, 'result_on is only available in RFC 9535 mode' unless rfc9535?
+
+    enum_on(obj_or_str).results
+  end
+
+  def paths_on(obj_or_str)
+    raise ArgumentError, 'paths_on is only available in RFC 9535 mode' unless rfc9535?
+
+    enum_on(obj_or_str).paths
   end
 
   def find_matching_brackets(token, scanner)
@@ -74,7 +78,13 @@ class JsonPath
 
   def join(join_path)
     res = deep_clone
-    res.path += JsonPath.new(join_path).path
+    if rfc9535?
+      suffix = join_path.to_s.start_with?('$') ? join_path.to_s[1..] : join_path.to_s
+      res.segments.concat(RFC9535::Parser.parse("$#{suffix}"))
+      res.path = path.to_s + suffix
+    else
+      res.path += JsonPath.new(join_path).path
+    end
     res
   end
 
@@ -126,13 +136,27 @@ class JsonPath
   end
 
   def enum_on(obj_or_str, mode = nil)
-    JsonPath::Enumerable.new(self, self.class.process_object(obj_or_str, @opts), mode,
-                             @opts)
+    object = self.class.process_object(obj_or_str, @opts)
+    if rfc9535?
+      return RFC9535::Enumerable.new(@segments, object)
+    end
+
+    JsonPath::Enumerable.new(self, object, mode, @opts)
   end
   alias [] enum_on
 
   def self.on(obj_or_str, path, opts = {})
-    new(path, opts).on(process_object(obj_or_str))
+    query = new(path, opts)
+    return query.on(obj_or_str) if query.rfc9535?
+
+    query.on(process_object(obj_or_str))
+  end
+
+  # RFC 9535 convenience entry point. Returns Result objects, each pairing
+  # the selected value with its Normalized Path. Requires rfc9535: true.
+  def self.result_on(obj_or_str, path, opts = {})
+    query = new(path, opts.merge(:rfc9535 => true))
+    query.result_on(obj_or_str)
   end
 
   def self.for(obj_or_str)
@@ -140,6 +164,34 @@ class JsonPath
   end
 
   private
+
+  def parse_legacy(path)
+    scanner = StringScanner.new(path.strip)
+    @path = []
+    until scanner.eos?
+      if (token = scanner.scan(/\$\B|@\B|\*|\.\./))
+        @path << token
+      elsif (token = scanner.scan(/[$@\p{Alnum}:{}_ -]+/))
+        @path << "['#{token}']"
+      elsif (token = scanner.scan(/'(.*?)'/))
+        @path << "[#{token}]"
+      elsif (token = scanner.scan(/\[/))
+        @path << find_matching_brackets(token, scanner)
+      elsif (token = scanner.scan(/\]/))
+        raise ArgumentError, 'unmatched closing bracket'
+      elsif (token = scanner.scan(/\(.*\)/))
+        @path << token
+      elsif scanner.scan(/\./)
+        nil
+      elsif (token = scanner.scan(/[><=] \d+/))
+        @path.last << token
+      elsif (token = scanner.scan(/./))
+        @path.last << token
+      else
+        raise ArgumentError, "character '#{scanner.peek(1)}' not supported in query"
+      end
+    end
+  end
 
   def self.process_object(obj_or_str, opts = {})
     obj_or_str.is_a?(String) ? MultiJson.decode(obj_or_str, max_nesting: opts[:max_nesting]) : obj_or_str

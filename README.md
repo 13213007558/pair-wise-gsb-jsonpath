@@ -114,6 +114,56 @@ enum.any?{ |c| c == 'red' }
 For more usage examples and variations on paths, please visit the tests. There
 are some more complex ones as well.
 
+### RFC 9535 (standard JSONPath) mode
+
+The historical goessner syntax above remains the default and is unchanged. An
+independent, standards-compliant [RFC 9535](https://www.rfc-editor.org/rfc/rfc9535)
+implementation is also available and never affects existing queries. Enable it
+per query with `rfc9535: true`, or use the `JsonPath::RFC9535` module directly:
+
+```ruby
+require 'jsonpath'
+
+json = '{"store":{"book":[{"price":8.95},{"price":12.99},{"price":8.99}]}}'
+
+# Values only
+JsonPath.new('$..book[?@.price < 10].price', rfc9535: true).on(json)
+# => [8.95, 8.99]
+
+# Values together with their Normalized Path
+results = JsonPath.new('$..book[0].price', rfc9535: true).result_on(json)
+results.map { |r| [r.value, r.normalized_path] }
+# => [[8.95, "$['store']['book'][0]['price']"]]
+
+# Standalone module
+JsonPath::RFC9535.on(json, '$..price')
+JsonPath::RFC9535.paths(json, '$..price')
+JsonPath::RFC9535.result(json, '$..price') # Result objects (value + path)
+```
+
+The standard mode supports child/descendant segments, name/index/wildcard
+selectors, array slices (`[start:stop:step]`, including negative steps), filters
+with `&&`, `||`, `!`, parentheses, comparisons and `$`/`@` queries, and the
+built-in functions `length`, `count`, `value`, `match` and `search`. Function
+arguments are checked against their declared NodesType, ValueType and
+LogicalType parameters; regex arguments must be string literals.
+
+Intentional differences from the legacy mode:
+
+* Missing values are Nothing and are distinct from JSON `null` and `false`.
+  Nothing never compares equal (or unequal) to anything.
+* A node selected more than once is returned more than once; results are not
+  deduplicated across the query. Repeated selectors in one bracket segment still
+  select a node only once, as required by the standard.
+* Every selected value has a Normalized Path such as `$['store']['book'][0]`.
+
+The CLI accepts the same mode with `--rfc9535`, emitting `[value, path]` pairs:
+
+```bash
+jsonpath --rfc9535 '$..book[0].price' store.json
+# => [[8.95,"$['store']['book'][0]['price']"]]
+```
+
 ### Querying ruby data structures
 
 If you have ruby hashes with symbolized keys as input, you

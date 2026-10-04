@@ -20,4 +20,10 @@ class TestJsonpathBin < MiniTest::Unit::TestCase
     File.open('/tmp/test.json', 'w') { |f| f << '{"test": "time"}' }
     assert_equal '["time"]', `#{@runner} '$.test' /tmp/test.json`.strip
   end
+
+  def test_rfc9535_outputs_value_and_normalized_path
+    File.open('/tmp/test.json', 'w') { |f| f << '{"a": {"b": 1}}' }
+    expected = '[[1,"$[\'a\'][\'b\']"]]'
+    assert_equal expected, `#{@runner} --rfc9535 '$..b' /tmp/test.json`.strip
+  end
 end

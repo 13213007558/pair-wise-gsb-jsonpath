@@ -5,19 +5,25 @@ require 'jsonpath'
 require 'multi_json'
 
 def usage
-  puts "jsonpath [expression] (file|string)
+  puts "jsonpath [--rfc9535] [expression] (file|string)
 
 If you omit the second argument, it will read stdin, assuming one valid JSON object
-per line. Expression must be a valid jsonpath expression."
+per line. Expression must be a valid jsonpath expression.
+
+With --rfc9535 the query is evaluated as an RFC 9535 JSONPath query and the
+output is a list of [value, normalized-path] pairs."
   exit!
 end
 
+rfc9535 = ARGV.delete('--rfc9535')
 usage unless ARGV[0]
 
-jsonpath = JsonPath.new(ARGV[0])
-case ARGV[1]
-when nil # stdin
-  puts MultiJson.encode(jsonpath.on(MultiJson.decode(STDIN.read)))
-when String
-  puts MultiJson.encode(jsonpath.on(MultiJson.decode(File.exist?(ARGV[1]) ? File.read(ARGV[1]) : ARGV[1])))
-end
+jsonpath = JsonPath.new(ARGV[0], :rfc9535 => rfc9535)
+source =
+  case ARGV[1]
+  when nil then STDIN.read
+  when String then File.exist?(ARGV[1]) ? File.read(ARGV[1]) : ARGV[1]
+  end
+data = MultiJson.decode(source)
+result = rfc9535 ? jsonpath.result_on(data).map { |r| [r.value, r.normalized_path] } : jsonpath.on(data)
+puts MultiJson.encode(result)
